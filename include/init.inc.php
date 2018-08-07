@@ -1,6 +1,6 @@
 <?php
 // ARO version
-define("VERSION", "0.4.0");
+define("VERSION", "0.4.1");
 // Amsterdam timezone by default, should probably be moved to config
 date_default_timezone_set("UTC");
 
@@ -70,9 +70,6 @@ if (file_exists("tmp/db-update")) {
     $ram=intval(trim($ramb[0]));
     if($ram<1700000) {
         die("The node requires at least 2 GB of RAM");
-    }
-    if($_config['masternode']==true && $ram<7000000){
-        die("The masternode require at least 8GB of RAM");
     }
     $res = unlink("tmp/db-update");
     if ($res) {

@@ -20,11 +20,14 @@ class Transaction
                     );
             } else {
                 // other type of transactions
-                $db->run(
+       
+	        if($x['version']!=100) { $db->run(
                     "UPDATE accounts SET balance=balance-:val WHERE id=:id",
                     [":id" => $x['dst'], ":val" => $x['val']]
                     );
-            }
+		}
+        
+    		}	
             // on version 0 / reward transaction, don't credit anyone
             if ($x['version'] > 0) {
                 $db->run(
@@ -82,7 +85,7 @@ class Transaction
             }
     
             // add the transactions to mempool
-            if ($x['version'] > 0 && $x['version']<=1000) {
+            if ($x['version'] > 0 && $x['version']<=110) {
                 $this->add_mempool($x);
             }
             $res = $db->run("DELETE FROM transactions WHERE id=:id", [":id" => $x['id']]);

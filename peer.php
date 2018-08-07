@@ -252,7 +252,6 @@ elseif ($q == "currentBlock") {
 } // return a specific block, used in syncing
 elseif ($q == "getBlock") {
     $height = intval($data['height']);
-
     $export = $block->export("", $height);
     if (!$export) {
         api_err("invalid-block");
