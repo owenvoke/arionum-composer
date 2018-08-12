@@ -1,6 +1,6 @@
 <?php
 // ARO version
-define("VERSION", "0.4.1");
+define("VERSION", "0.4.2");
 // Amsterdam timezone by default, should probably be moved to config
 date_default_timezone_set("UTC");
 
@@ -13,9 +13,12 @@ if (php_sapi_name() !== 'cli' && substr_count($_SERVER['PHP_SELF'], "/") > 1) {
     die("This application should only be run in the main directory /");
 }
 
+require_once __DIR__.'/Exception.php';
 require_once("include/config.inc.php");
 require_once("include/db.inc.php");
 require_once("include/functions.inc.php");
+require_once __DIR__.'/Blacklist.php';
+require_once __DIR__.'/InitialPeers.php';
 require_once("include/block.inc.php");
 require_once("include/account.inc.php");
 require_once("include/transaction.inc.php");

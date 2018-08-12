@@ -1,59 +1,85 @@
 <?php
 
+use Arionum\Blacklist;
+
 class Transaction
 {
     // reverse and remove all transactions from a block
     public function reverse($block)
     {
         global $db;
+        
         $acc = new Account();
         $r = $db->run("SELECT * FROM transactions WHERE block=:block ORDER by `version` ASC", [":block" => $block]);
         foreach ($r as $x) {
+            _log("Reversing transaction $x[id]",4);
             if (empty($x['src'])) {
                 $x['src'] = $acc->get_address($x['public_key']);
             }
             if ($x['version'] == 2) {
                 // payment sent to alias
-                $db->run(
+               $rez=$db->run(
                     "UPDATE accounts SET balance=balance-:val WHERE alias=:alias",
                     [":alias" => $x['dst'], ":val" => $x['val']]
                     );
+                    if($rez!=1) {
+                        _log("Update alias balance minus failed",3);
+                        return false;
+                    }
             } else {
                 // other type of transactions
        
-	        if($x['version']!=100) { $db->run(
+                if ($x['version']!=100&&$x['version']<111) {
+                    $rez=$db->run(
                     "UPDATE accounts SET balance=balance-:val WHERE id=:id",
                     [":id" => $x['dst'], ":val" => $x['val']]
                     );
-		}
-        
-    		}	
+                    if($rez!=1) {
+                        _log("Update accounts balance minus failed",3);
+                        return false;
+                    }
+                }
+            }
             // on version 0 / reward transaction, don't credit anyone
-            if ($x['version'] > 0) {
-                $db->run(
+            if ($x['version'] > 0 && $x['version']<111) {
+                $rez=$db->run(
                     "UPDATE accounts SET balance=balance+:val WHERE id=:id",
                     [":id" => $x['src'], ":val" => $x['val'] + $x['fee']]
                 );
+                if($rez!=1) {
+                    _log("Update account balance plus failed",3);
+                    return false;
+                }
             }
             // removing the alias if the alias transaction is reversed
             if ($x['version']==3) {
-                $db->run(
+                $rez=$db->run(
                     "UPDATE accounts SET alias=NULL WHERE id=:id",
                     [":id" => $x['src']]
                 );
+                if($rez!=1) {
+                    _log("Clear alias failed",3);
+                    return false;
+                }
             }
 
 
             if ($x['version']>=100&&$x['version']<110&&$x['height']>=80000) {
                 if ($x['version']==100) {
-                    $db->run("DELETE FROM masternode WHERE public_key=:public_key", [':public_key'=>$x['public_key']]);
+                    $rez=$db->run("DELETE FROM masternode WHERE public_key=:public_key", [':public_key'=>$x['public_key']]);
+                    if($rez!=1) {
+                        _log("Delete from masternode failed",3);
+                        return false;
+                    }
                 } elseif ($x['version']==101) {
-                    $db->run(
+                    $rez=$db->run(
                         "UPDATE masternode SET status=1 WHERE public_key=:public_key",
                     [':public_key'=>$x['public_key']]
                     );
+
                 } elseif ($x['version']==102) {
-                    $db->run("UPDATE masternode SET status=0 WHERE public_key=:public_key", [':public_key'=>$x['public_key']]);
+                    $rez=$db->run("UPDATE masternode SET status=0 WHERE public_key=:public_key", [':public_key'=>$x['public_key']]);
+
                 } elseif ($x['version']==103) {
                     $mnt=$db->row("SELECT height, `message` FROM transactions WHERE version=100 AND public_key=:public_key ORDER by height DESC LIMIT 1", [":public_key"=>$x['public_key']]);
                     $vers=$db->single(
@@ -67,21 +93,35 @@ class Transaction
                         $status=0;
                     }
                     
-                    $db->run(
+                    $rez=$db->run(
                         "INSERT into masternode SET `public_key`=:public_key, `height`=:height, `ip`=:ip, `status`=:status",
                     [":public_key"=>$x['public_key'], ":height"=>$mnt['height'], ":ip"=>$mnt['message'], ":status"=>$status]
                     );
-                    $db->run("UPDATE accounts SET balance=balance-100000 WHERE public_key=:public_key", [':public_key'=>$x['public_key']]);
+                    if($rez!=1) {
+                        _log("Insert into masternode failed",3);
+                        return false;
+                    }
+                    $rez=$db->run("UPDATE accounts SET balance=balance-100000 WHERE public_key=:public_key", [':public_key'=>$x['public_key']]);
+                    if($rez!=1) {
+                        _log("Update masternode balance failed",3);
+                        return false;
+                    }
                 }
             }
             // internal masternode history
             if ($x['version']==111) {
+                _log("Masternode reverse: $x[message]",4);
                 $m=explode(",", $x['message']);
 
-                $db->run(
+                $rez=$db->run(
                     "UPDATE masternode SET fails=:fails, blacklist=:blacklist, last_won=:last_won WHERE public_key=:public_key",
                 [":public_key"=>$x['public_key'], ":blacklist"=> $m[0], ":fails"=>$m[2], ":last_won"=>$m[1]]
                 );
+                if($rez!=1) {
+                    _log("Update masternode log failed",3);
+                    return false;
+                }
+
             }
     
             // add the transactions to mempool
@@ -90,6 +130,7 @@ class Transaction
             }
             $res = $db->run("DELETE FROM transactions WHERE id=:id", [":id" => $x['id']]);
             if ($res != 1) {
+                _log("Delete transaction failed",3);
                 return false;
             }
         }
@@ -182,9 +223,16 @@ class Transaction
     public function add_mempool($x, $peer = "")
     {
         global $db;
+        global $_config;
         $block = new Block();
         if ($x['version']>110) {
             return true;
+        }
+        
+        if ($_config['use_official_blacklist']!==false) {
+            if (Blacklist::checkPublicKey($x['public_key']) || Blacklist::checkAddress($x['src'])) {
+                return true;
+            }
         }
         $current = $block->current();
         $height = $current['height'];
@@ -256,9 +304,9 @@ class Transaction
             //master node deposit
         } elseif ($x['version']==103&&$height>=80000) {
             $blk=new Block();
-            $blk->masternode_log($x['public_key'],$height,$block);
+            $blk->masternode_log($x['public_key'], $height, $block);
 
-            //master node withdrawal
+        //master node withdrawal
         } else {
             $db->run("UPDATE accounts SET balance=balance+:val WHERE id=:id", [":id" => $x['dst'], ":val" => $x['val']]);
         }
@@ -332,9 +380,9 @@ class Transaction
         // }
             
         // internal transactions
-        if($x['version']>110){
+        if ($x['version']>110) {
             return false;
-        }    
+        }
 
         // the value must be >=0
         if ($x['val'] < 0) {
@@ -376,6 +424,11 @@ class Transaction
                 $message=preg_replace("/[^0-9\.]/", "", $message);
                 if (!filter_var($message, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
                     _log("The Masternode IP is invalid", 3);
+                    return false;
+                }
+                global $db;
+                $existing=$db->single("SELECT COUNT(1) FROM masternode WHERE public_key=:id or ip=:ip", ["id"=>$x['public_key'], ":ip"=>$message]);
+                if ($existing!=0) {
                     return false;
                 }
             }
