@@ -23,6 +23,9 @@ DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR
 OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE
 OR OTHER DEALINGS IN THE SOFTWARE.
 */
+
+const SANITY_LOCK_PATH = __DIR__.'/tmp/sanity-lock';
+
 set_time_limit(0);
 error_reporting(0);
 
@@ -31,8 +34,10 @@ if (php_sapi_name() !== 'cli') {
     die("This should only be run as cli");
 }
 
+require_once __DIR__.'/include/init.inc.php';
+
 // make sure there's only a single sanity process running at the same time
-if (file_exists("tmp/sanity-lock")) {
+if (file_exists(SANITY_LOCK_PATH)) {
     $ignore_lock = false;
     if ($argv[1] == "force") {
         $res = intval(shell_exec("ps aux|grep sanity.php|grep -v grep|wc -l"));
@@ -40,17 +45,20 @@ if (file_exists("tmp/sanity-lock")) {
             $ignore_lock = true;
         }
     }
-    $pid_time = filemtime("tmp/sanity-lock");
-    // if the process died, restart after 1day
-    if (time() - $pid_time > 86400) {
-        @unlink("tmp/sanity-lock");
+    $pid_time = filemtime(SANITY_LOCK_PATH);
+
+    // If the process died, restart after 10 times the sanity interval
+    if (time() - $pid_time > ($_config['sanity_interval'] ?? 900 * 10)) {
+        @unlink(SANITY_LOCK_PATH);
     }
+
     if (!$ignore_lock) {
-        die("Sanity lock in place");
+        die("Sanity lock in place".PHP_EOL);
     }
 }
+
 // set the new sanity lock
-$lock = fopen("tmp/sanity-lock", "w");
+$lock = fopen(SANITY_LOCK_PATH, "w");
 fclose($lock);
 $arg = trim($argv[1]);
 $arg2 = trim($argv[2]);
@@ -60,8 +68,6 @@ if ($arg != "microsanity") {
     sleep(3);
 }
 
-require_once __DIR__.'/include/init.inc.php';
-
 if ($argv[1]=="dev") {
     error_reporting(E_ALL & ~E_DEPRECATED & ~E_STRICT & ~E_NOTICE);
     ini_set("display_errors", "on");
@@ -70,7 +76,7 @@ if ($argv[1]=="dev") {
 // the sanity can't run without the schema being installed
 if ($_config['dbversion'] < 2) {
     die("DB schema not created");
-    @unlink("tmp/sanity-lock");
+    @unlink(SANITY_LOCK_PATH);
     exit;
 }
 
@@ -233,7 +239,7 @@ if ($arg == "microsanity" && !empty($arg2)) {
         _log("Synced block from $host - $b[height] $b[difficulty]");
     } while (0);
 
-    @unlink("tmp/sanity-lock");
+    @unlink(SANITY_LOCK_PATH);
     exit;
 }
 
@@ -273,7 +279,7 @@ if ($total_peers == 0 && $_config['testnet'] == false) {
     try {
         $peers = $initialPeers->getAll();
     } catch (\Arionum\Node\Exception $e) {
-        @unlink('tmp/sanity-lock');
+        @unlink(SANITY_LOCK_PATH);
         die($e->getMessage().PHP_EOL);
     }
 
@@ -301,7 +307,15 @@ if ($total_peers == 0 && $_config['testnet'] == false) {
             continue;
         }
         $peered[$pid] = 1;
-        $res = peer_post($peer."/peer.php?q=peer", ["hostname" => $_config['hostname'], "repeer" => 1]);
+        
+        if($_config['passive_peering'] == true){
+            // does not peer, just add it to DB in passive mode
+            $db->run("INSERT into peers set hostname=:hostname, ping=0, reserve=0,ip=:ip",[":hostname"=>$peer, ":ip"=>md5($peer)]);
+            $res=true;
+        } else {
+            // forces the other node to peer with us.
+            $res = peer_post($peer."/peer.php?q=peer", ["hostname" => $_config['hostname'], "repeer" => 1]);
+        }
         if ($res !== false) {
             $i++;
             echo "Peering OK - $peer\n";
@@ -317,7 +331,7 @@ if ($total_peers == 0 && $_config['testnet'] == false) {
     $total_peers = count($r);
     if ($total_peers == 0) {
         // something went wrong, could not add any peers -> exit
-        @unlink("tmp/sanity-lock");
+        @unlink(SANITY_LOCK_PATH);
         die("Could not peer to any peers! Please check internet connectivity!\n");
     }
 }
@@ -328,7 +342,7 @@ foreach ($r as $x) {
     _log("Contacting peer $x[hostname]");
     $url = $x['hostname']."/peer.php?q=";
     // get their peers list
-    if ($_config['get_more_peers']==true) {
+    if ($_config['get_more_peers']==true && $_config['passive_peering']!=true) {
         $data = peer_post($url."getPeers", [], 5);
         if ($data === false) {
             _log("Peer $x[hostname] unresponsive");
@@ -791,4 +805,4 @@ if ($_config['sanity_recheck_blocks'] > 0 && $_config['testnet'] == false) {
 
 _log("Finishing sanity");
 
-@unlink("tmp/sanity-lock");
+@unlink(SANITY_LOCK_PATH);
