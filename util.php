@@ -459,13 +459,15 @@ elseif ($cmd == 'get-address') {
     $db->run("UPDATE peers SET blacklisted=0, fails=0, stuckfail=0");
     echo "All the peers have been removed from the blacklist\n";
 } elseif ($cmd == 'resync-accounts') {
+    die("Currently disabled due to asset implementation.");
     // resyncs the balance on all accounts
     if (file_exists("tmp/sanity-lock")) {
         die("Sanity running. Wait for it to finish");
     }
     touch("tmp/sanity-lock");
     // lock table to avoid race conditions on blocks
-    $db->exec("LOCK TABLES blocks WRITE, accounts WRITE, transactions WRITE, mempool WRITE");
+    $db->exec("LOCK TABLES blocks WRITE, accounts WRITE, transactions WRITE, mempool WRITE, masternode WRITE, peers write, config WRITE, assets WRITE, assets_balance WRITE, assets_market WRITE");
+
 
     $r=$db->run("SELECT * FROM accounts");
     foreach ($r as $x) {
@@ -475,8 +477,8 @@ elseif ($cmd == 'get-address') {
         }
         $rec=$db->single("SELECT SUM(val) FROM transactions WHERE (dst=:id or dst=:alias) AND (height<80000 OR version!=100) and version<111", [":id"=>$x['id'], ":alias"=>$alias]);
         $releases=$db->single("SELECT COUNT(1) FROM transactions WHERE dst=:id AND version=103", [":id"=>$x['id']]);
-        if($releases>0){ //masternode releases
-                $rec+=$releases*100000;
+        if ($releases>0) { //masternode releases
+            $rec+=$releases*100000;
         }
         $spent=$db->single("SELECT SUM(val+fee) FROM transactions WHERE public_key=:pub AND version>0", [":pub"=>$x['public_key']]);
         if ($spent==false) {
@@ -503,7 +505,7 @@ elseif ($cmd == 'get-address') {
     if ($limit==0) {
         $limit=5000;
     }
-    for ($i=$current['height']-$limit;$i<=$current['height'];$i++) {
+    for ($i=$current['height']-$limit; $i<=$current['height']; $i++) {
         $data=peer_post($peer."/peer.php?q=getBlock", ["height" => $i]);
         if ($data==false) {
             continue;
@@ -545,7 +547,7 @@ elseif ($cmd == 'get-address') {
     echo "Hash:\t\t".md5(json_encode($res))."\n\n";
 } elseif ($cmd == "version") {
     echo "\n\n".VERSION."\n\n";
-} elseif ($cmd == "sendblock"){
+} elseif ($cmd == "sendblock") {
     $peer=trim($argv[3]);
     if (!filter_var($peer, FILTER_VALIDATE_URL)) {
         die("Invalid peer hostname");
@@ -555,14 +557,13 @@ elseif ($cmd == 'get-address') {
     $block=new Block();
     $data = $block->export("", $height);
 
-    
-    if($data===false){
+
+    if ($data===false) {
         die("Could not find this block");
     }
     $response = peer_post($peer."/peer.php?q=submitBlock", $data, 60, true);
     var_dump($response);
-
-}elseif ($cmd == "recheck-external-blocks") {
+} elseif ($cmd == "recheck-external-blocks") {
     $peer=trim($argv[2]);
     if (!filter_var($peer, FILTER_VALIDATE_URL)) {
         die("Invalid peer hostname");
@@ -576,10 +577,10 @@ elseif ($cmd == 'get-address') {
 
     $last=peer_post($peer."/peer.php?q=currentBlock");
 
-    $b=peer_post($peer."/peer.php?q=getBlock",["height"=>$height]);
+    $b=peer_post($peer."/peer.php?q=getBlock", ["height"=>$height]);
 
     for ($i = $height+1; $i <= $last['height']; $i++) {
-        $c=peer_post($peer."/peer.php?q=getBlock",["height"=>$i]);
+        $c=peer_post($peer."/peer.php?q=getBlock", ["height"=>$i]);
 
         if (!$block->mine(
             $c['public_key'],
@@ -592,12 +593,10 @@ elseif ($cmd == 'get-address') {
         )) {
             print("Invalid block detected. $c[height] - $c[id]\n");
             break;
-        } 
+        }
         echo "Block $i -> ok\n";
         $b=$c;
     }
-
-
 } else {
     echo "Invalid command\n";
 }

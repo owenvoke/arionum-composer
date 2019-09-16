@@ -84,8 +84,9 @@ ini_set('memory_limit', '2G');
 
 $block = new Block();
 $acc = new Account();
-$current = $block->current();
+$trx= new Transaction();
 
+$current = $block->current();
 
 
 
@@ -94,61 +95,22 @@ $current = $block->current();
 // bootstrapping the initial sync
 if ($current['height']==1) {
     echo "Bootstrapping!\n";
-    $last=file_get_contents("http://dumps.arionum.com/last");
-    $last=intval($last);
-    $failed_sync=false;
-    for ($i=1000;$i<=$last;$i=$i+1000) {
-        echo "Download file $i\n";
-        $res=trim(file_get_contents("http://dumps.arionum.com/aro.db.$i"));
-        if ($res===false) {
-            echo "Could not download the bootstrap file $i. Syncing the old fashioned way.\n";
-            break;
-        }
-        $data=json_decode($res, true);
-        
-        if ($data===false||is_null($data)) {
-            echo "Could not parse the bootstrap file $i. Syncing the old fashioned way.\n";
-            echo json_last_error_msg();
-            break;
-        }
-        foreach ($data as $x) {
-            if (count($x['data'])>0) {
-                $transactions=[];
-                
-                foreach ($x['data'] as $d) {
-                    $trans = [
-                            "id"         => $d[0],
-                            "dst"        => $d[1],
-                            "val"        => $d[2],
-                            "fee"        => $d[3],
-                            "signature"  => $d[4],
-                            "message"    => $d[5],
-                            "version"    => $d[6],
-                            "date"       => $d[7],
-                            "public_key" => $d[8],
-                        ];
-                    ksort($trans);
-                    $transactions[$d[0]] = $trans;
-                }
-                ksort($transactions);
-                $x['data']=$transactions;
-            }
-            
-        
-            echo "-> Adding block $x[height]\n";
-
-            $res=$block->add($x['height'], $x['public_key'], $x['nonce'], $x['data'], $x['date'], $x['signature'], $x['difficulty'], $x['reward_signature'], $x['argon'], true);
-            if (!$res) {
-                echo "Error: Adding the block failed. Syncing the old way.\n";
-                $failed_sync=true;
-                break;
-            }
-        }
-        if ($failed_sync) {
-            break;
-        }
+    $db_name=substr($_config['db_connect'], strrpos($_config['db_connect'], "dbname=")+7);
+    echo "DB name: $db_name\n";
+    echo "Downloading the blockchain dump from arionum.info\n";
+    $arofile=__DIR__ . '/tmp/aro.sql';
+    if (file_exists("/usr/bin/curl")) {
+        system("/usr/bin/curl -o $arofile 'https://arionum.info/dump/aro.sql'", $ret);
+    } elseif (file_exists("/usr/bin/wget")) {
+        system("/usr/bin/wget -O $arofile 'https://arionum.info/dump/aro.sql'", $ret);
+    } else {
+        die("/usr/bin/curl and /usr/bin/wget not installed or inaccessible. Please install either of them.");
     }
-    
+
+    echo "Importing the blockchain dump\n";
+    system("mysql -u ".escapeshellarg($_config['db_user'])." -p".escapeshellarg($_config['db_pass'])." ".escapeshellarg($db_name). " < ".$arofile);
+    echo "Bootstrapping completed. Sleeping for 3 min. \n";
+    sleep(180);
     $current = $block->current();
 }
 // the microsanity process is an anti-fork measure that will determine the best blockchain to choose for the last block
@@ -190,7 +152,7 @@ if ($arg == "microsanity" && !empty($arg2)) {
             echo "Block hex larger than current\n";
             break;
         }
-        
+
         // make sure the block is valid
         $prev = $block->get($current['height'] - 1);
         $public = $acc->public_key($data['generator']);
@@ -218,7 +180,7 @@ if ($arg == "microsanity" && !empty($arg2)) {
         echo "Starting to sync last block from $x[hostname]\n";
         $b = $data;
 
-        
+
         $res = $block->add(
             $b['height'],
             $b['public_key'],
@@ -307,10 +269,10 @@ if ($total_peers == 0 && $_config['testnet'] == false) {
             continue;
         }
         $peered[$pid] = 1;
-        
-        if($_config['passive_peering'] == true){
+
+        if ($_config['passive_peering'] == true) {
             // does not peer, just add it to DB in passive mode
-            $db->run("INSERT into peers set hostname=:hostname, ping=0, reserve=0,ip=:ip",[":hostname"=>$peer, ":ip"=>md5($peer)]);
+            $db->run("INSERT into peers set hostname=:hostname, ping=0, reserve=0,ip=:ip", [":hostname"=>$peer, ":ip"=>md5($peer)]);
             $res=true;
         } else {
             // forces the other node to peer with us.
@@ -348,9 +310,9 @@ foreach ($r as $x) {
             _log("Peer $x[hostname] unresponsive");
             // if the peer is unresponsive, mark it as failed and blacklist it for a while
             $db->run(
-            "UPDATE peers SET fails=fails+1, blacklisted=UNIX_TIMESTAMP()+((fails+1)*3600) WHERE id=:id",
-            [":id" => $x['id']]
-        );
+                "UPDATE peers SET fails=fails+1, blacklisted=UNIX_TIMESTAMP()+((fails+1)*3600) WHERE id=:id",
+                [":id" => $x['id']]
+            );
             continue;
         }
         foreach ($data as $peer) {
@@ -380,9 +342,9 @@ foreach ($r as $x) {
             }
             // make sure there's no peer in db with this ip or hostname
             if (!$db->single(
-            "SELECT COUNT(1) FROM peers WHERE ip=:ip or hostname=:hostname",
-            [":ip" => $peer['ip'], ":hostname" => $peer['hostname']]
-        )) {
+                "SELECT COUNT(1) FROM peers WHERE ip=:ip or hostname=:hostname",
+                [":ip" => $peer['ip'], ":hostname" => $peer['hostname']]
+            )) {
                 $i++;
                 // check a max_test_peers number of peers from each peer
                 if ($i > $_config['max_test_peers']) {
@@ -447,8 +409,6 @@ foreach ($r as $x) {
                 $largest_height = $data['height'];
                 $largest_height_block = $data['id'];
             } else {
-               
-
                     // if the blocks have the same number of transactions, choose the one with the highest derived integer from the first 12 hex characters
                 $no1 = hexdec(substr(coin2hex($largest_height_block), 0, 12));
                 $no2 = hexdec(substr(coin2hex($data['id']), 0, 12));
@@ -578,7 +538,7 @@ if ($current['height'] < $largest_height && $largest_height > 1) {
             foreach ($data as $b) {
                 $b['id'] = san($b['id']);
                 $b['height'] = san($b['height']);
-                
+
                 if (!$block->check($b)) {
                     $block_parse_failed=true;
                     _log("Block check: could not add block - $b[id] - $b[height]");
@@ -620,9 +580,9 @@ if ($current['height'] < $largest_height && $largest_height > 1) {
         _log("Rechecking reward transactions");
         $current = $block->current();
         $rwpb=$db->single("SELECT COUNT(1) FROM transactions WHERE version=0 AND message=''");
-        if($rwpb!=$current['height']){
-           $failed=$db->single("SELECT blocks.height FROM blocks LEFT JOIN transactions ON transactions.block=blocks.id and transactions.version=0 and transactions.message='' WHERE transactions.height is NULL ORDER by blocks.height ASC LIMIT 1");
-            if($failed>1){
+        if ($rwpb!=$current['height']) {
+            $failed=$db->single("SELECT blocks.height FROM blocks LEFT JOIN transactions ON transactions.block=blocks.id and transactions.version=0 and transactions.message='' WHERE transactions.height is NULL ORDER by blocks.height ASC LIMIT 1");
+            if ($failed>1) {
                 _log("Found failed block - $faield");
                 $block->delete($failed);
                 $block_parse_failed==false;
@@ -630,12 +590,11 @@ if ($current['height'] < $largest_height && $largest_height > 1) {
         }
     }
     if ($block_parse_failed==true||$argv[1]=="resync") {
-       
         $last_resync=$db->single("SELECT val FROM config WHERE cfg='last_resync'");
         if ($last_resync<time()-(3600*24)||$argv[1]=="resync") {
             if ($current['date']<time()-(3600*72)||$argv[1]=="resync") {
                 $to_remove=3000;
-                if(intval($argv[2])>0){
+                if (intval($argv[2])>0) {
                     $to_remove=intval($argv[2]);
                 }
                 _log("Removing $to_remove blocks, the blockchain is stale.");
@@ -647,38 +606,40 @@ if ($current['height'] < $largest_height && $largest_height > 1) {
 
                 $resyncing=true;
             }
-            if ($resyncing==true) {
-                _log("Resyncing accounts");
-                $db->run("INSERT into config SET val=UNIX_TIMESTAMP(), cfg='last_resync' ON DUPLICATE KEY UPDATE val=UNIX_TIMESTAMP()");
-                $db->exec("LOCK TABLES blocks WRITE, accounts WRITE, transactions WRITE, mempool WRITE");
+            // needs to be redone due to the assets
+            // if ($resyncing==true) {
+            //     _log("Resyncing accounts");
+            //     $db->run("INSERT into config SET val=UNIX_TIMESTAMP(), cfg='last_resync' ON DUPLICATE KEY UPDATE val=UNIX_TIMESTAMP()");
+            //     $db->exec("LOCK TABLES blocks WRITE, accounts WRITE, transactions WRITE, mempool WRITE, masternode WRITE, peers write, config WRITE, assets WRITE, assets_balance WRITE, assets_market WRITE");
 
-                $r=$db->run("SELECT * FROM accounts");
-                foreach ($r as $x) {
-                    $alias=$x['alias'];
-                    if (empty($alias)) {
-                        $alias="A";
-                    }
-                    $rec=$db->single("SELECT SUM(val) FROM transactions WHERE (dst=:id or dst=:alias) AND (height<80000 OR version!=100) and version<111", [":id"=>$x['id'], ":alias"=>$alias]);
-                    $releases=$db->single("SELECT COUNT(1) FROM transactions WHERE dst=:id AND version=103", [":id"=>$x['id']]);
-                    if($releases>0){ //masternode releases
-                            $rec+=$releases*100000;
-                    }
-                    $spent=$db->single("SELECT SUM(val+fee) FROM transactions WHERE public_key=:pub AND version>0", [":pub"=>$x['public_key']]);
-                    if ($spent==false) {
-                        $spent=0;
-                    }
-                    $balance=round(($rec-$spent), 8);
-                    if ($x['balance']!=$balance) {
-                        // echo "rec: $rec, spent: $spent, bal: $x[balance], should be: $balance - $x[id] $x[public_key]\n";
-                        if (trim($argv[2])!="check") {
-                            $db->run("UPDATE accounts SET balance=:bal WHERE id=:id", [":id"=>$x['id'], ":bal"=>$balance]);
-                        }
-                    }
-                }
-                $current = $block->current();
-                $db->run("DELETE FROM masternode WHERE height>:h",[":h"=>$current['height']]);
-                $db->exec("UNLOCK TABLES");
-            }
+
+            //     $r=$db->run("SELECT * FROM accounts");
+            //     foreach ($r as $x) {
+            //         $alias=$x['alias'];
+            //         if (empty($alias)) {
+            //             $alias="A";
+            //         }
+            //         $rec=$db->single("SELECT SUM(val) FROM transactions WHERE (dst=:id or dst=:alias) AND (height<80000 OR version!=100) and version<111", [":id"=>$x['id'], ":alias"=>$alias]);
+            //         $releases=$db->single("SELECT COUNT(1) FROM transactions WHERE dst=:id AND version=103", [":id"=>$x['id']]);
+            //         if ($releases>0) { //masternode releases
+            //             $rec+=$releases*100000;
+            //         }
+            //        $spent=$db->single("SELECT SUM(val+fee) FROM transactions WHERE public_key=:pub AND version>0", [":pub"=>$x['public_key']]);
+            //        if ($spent==false) {
+            //            $spent=0;
+            //        }
+            //        $balance=round(($rec-$spent), 8);
+            //        if ($x['balance']!=$balance) {
+            //            // echo "rec: $rec, spent: $spent, bal: $x[balance], should be: $balance - $x[id] $x[public_key]\n";
+            //            if (trim($argv[2])!="check") {
+            //                $db->run("UPDATE accounts SET balance=:bal WHERE id=:id", [":id"=>$x['id'], ":bal"=>$balance]);
+            //            }
+            //        }
+            //    }
+            //    $current = $block->current();
+            //    $db->run("DELETE FROM masternode WHERE height>:h",[":h"=>$current['height']]);
+            //    $db->exec("UNLOCK TABLES");
+            // }
         }
     }
 
@@ -712,13 +673,15 @@ if ($_config['sanity_rebroadcast_locals'] == true && $_config['disable_repropaga
 if ($_config['disable_repropagation'] == false) {
     $forgotten = $current['height'] - $_config['sanity_rebroadcast_height'];
     $r1 = $db->run(
-    "SELECT id FROM mempool WHERE height<:forgotten ORDER by val DESC LIMIT 10",
-    [":forgotten" => $forgotten]);
+        "SELECT id FROM mempool WHERE height<:forgotten ORDER by val DESC LIMIT 10",
+        [":forgotten" => $forgotten]
+    );
     // getting some random transactions as well
     $r2 = $db->run(
-    "SELECT id FROM mempool WHERE height<:forgotten ORDER by RAND() LIMIT 10",
-    [":forgotten" => $forgotten]);
-    $r=array_merge($r1,$r2);
+        "SELECT id FROM mempool WHERE height<:forgotten ORDER by RAND() LIMIT 10",
+        [":forgotten" => $forgotten]
+    );
+    $r=array_merge($r1, $r2);
 
 
     _log("Rebroadcasting external transactions - ".count($r));
@@ -811,6 +774,86 @@ if ($_config['sanity_recheck_blocks'] > 0 && $_config['testnet'] == false) {
         echo "All checked blocks are ok\n";
     }
 }
+
+// not too often to not cause load
+if (rand(0, 10)==1) {
+    // after 10000 blocks, clear asset internal transactions
+    $db->run("DELETE FROM transactions WHERE (version=57 or version=58 or version=59) AND height<:height", [":height"=>$current['height']-10000]);
+
+    // remove market orders that have been filled, after 10000 blocks
+    $r=$db->run("SELECT id FROM assets_market WHERE val_done=val or status=2");
+    foreach ($r as $x) {
+        $last=$db->single("SELECT height FROM transactions WHERE (public_key=:id or dst=:id2) ORDER by height DESC LIMIT 1", [":id"=>$x['id'], ":id2"=>$x['id']]);
+        if ($current['height']-$last>10000) {
+            $db->run("DELETE FROM assets_market WHERE id=:id", [":id"=>$x['id']]);
+        }
+    }
+}
+
+if ($_config['masternode']==true&&!empty($_config['masternode_public_key'])&&!empty($_config['masternode_voting_public_key'])&&!empty($_config['masternode_voting_private_key'])) {
+    echo "Masternode votes\n";
+    $r=$db->run("SELECT * FROM masternode WHERE status=1 ORDER by RAND() LIMIT 3");
+    foreach ($r as $x) {
+        $blacklist=0;
+        $x['ip']=san_ip($x['ip']);
+        echo "Testing masternode: $x[ip]\n";
+        $f=file_get_contents("http://$x[ip]/api.php?q=currentBlock");
+        if ($f) {
+            $res=json_decode($f, true);
+            $res=$res['data'];
+            if ($res['height']<$current['height']-50) {
+                $blacklist=1;
+            }
+            echo "Masternode Height: ".$res['height']."\n";
+        } else {
+            echo "---> Unresponsive\n";
+            $blacklist=1;
+        }
+
+        if ($blacklist) {
+            echo "Blacklisting masternode $x[public_key]\n";
+            $val='0.00000000';
+            $fee='0.00000001';
+            $date=time();
+            $version=106;
+            $msg=san($x['public_key']);
+            $address=$acc->get_address($x['public_key']);
+            $public_key=$_config['masternode_public_key'];
+            $private_key=$_config['masternode_voting_private_key'];
+            $info=$val."-".$fee."-".$address."-".$msg."-$version-".$public_key."-".$date;
+            $signature=ec_sign($info, $private_key);
+
+
+            $transaction = [
+                "src"        => $acc->get_address($_config['masternode_public_key']),
+                "val"        => $val,
+                "fee"        => $fee,
+                "dst"        => $address,
+                "public_key" => $public_key,
+                "date"       => $date,
+                "version"    => $version,
+                "message"    => $msg,
+                "signature"  => $signature,
+            ];
+
+            $hash = $trx->hash($transaction);
+            $transaction['id'] = $hash;
+            if (!$trx->check($transaction)) {
+                print("Blacklist transaction signature failed\n");
+            }
+            $res = $db->single("SELECT COUNT(1) FROM mempool WHERE id=:id", [":id" => $hash]);
+            if ($res != 0) {
+                print("Blacklist transaction already in mempool\n");
+            }
+            $trx->add_mempool($transaction, "local");
+            $hash=escapeshellarg(san($hash));
+            system("php propagate.php transaction $hash > /dev/null 2>&1  &");
+            echo "Blacklist Hash: $hash\n";
+        }
+    }
+}
+
+
 
 _log("Finishing sanity");
 

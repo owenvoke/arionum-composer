@@ -59,7 +59,6 @@ class DB extends PDO
 
         
             _log($msg);
-        
     }
 
     private function cleanup($bind, $sql = "")
