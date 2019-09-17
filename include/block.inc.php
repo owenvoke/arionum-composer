@@ -71,7 +71,7 @@ class Block
         $msg = '';
 
         $mn_reward_rate=0.33;
-  
+
         // hf
         if ($height>216000) {
             $votes=[];
@@ -112,21 +112,24 @@ class Block
         }
         $cold_winner=false;
         $cold_reward=0;
+        $cold_last_won=0;
         if ($height>216000) {
             if ($votes['coldstacking']==1) {
                 $cold_reward=round($mn_reward*0.2, 8);
                 $mn_reward=$mn_reward-$cold_reward;
                 $mn_reward=number_format($mn_reward, 8, ".", "");
                 $cold_reward=number_format($cold_reward, 8, ".", "");
-                $cold_winner=$db->single(
-                    "SELECT public_key FROM masternode WHERE height<:start ORDER by cold_last_won ASC, public_key ASC LIMIT 1",
-                    [":current"=>$height, ":start"=>$height-360]
+                $cw=$db->row(
+                    "SELECT public_key, cold_last_won  FROM masternode WHERE height<:start ORDER by cold_last_won ASC, public_key ASC LIMIT 1",
+                    [":start"=>$height-360]
                 );
-                _log("Cold MN Winner: $mn_winner", 2);
+                $cold_winner=$cw['public_key'];
+                $cold_last_won=$cw['cold_last_won'];
+                _log("Cold MN Winner: $cold_winner [$cold_last_won]", 2);
             }
         }
 
-        
+
 
         // the reward transaction
         $transaction = [
@@ -190,9 +193,10 @@ class Block
         //masternode rewards
         if ($mn_winner!==false&&$height>=80458&&$mn_reward>0) {
             //cold stacking rewards
+
             if ($cold_winner!==false&&$height>216000&&$cold_reward>0) {
                 $db->run("UPDATE accounts SET balance=balance+:bal WHERE public_key=:pub", [":pub"=>$cold_winner, ":bal"=>$cold_reward]);
-            
+
                 $bind = [
                 ":id"         => hex2coin(hash("sha512", "cold".$hash.$height.$cold_winner)),
                 ":public_key" => $public_key,
@@ -216,6 +220,12 @@ class Block
                     $db->rollback();
                     $db->exec("UNLOCK TABLES");
                     return false;
+                }
+
+                if ($height>216070) {
+                    $db->run("UPDATE masternode SET cold_last_won=:height WHERE public_key=:pub", [':pub'=>$cold_winner, ":height"=>$height]);
+
+                    $this->add_log($hash, ["table"=>"masternode", "key"=>"public_key","id"=>$cold_winner, "vals"=>['cold_last_won'=>$cold_last_won]]);
                 }
             }
 
@@ -253,7 +263,7 @@ class Block
                 $db->exec("UNLOCK TABLES");
                 return false;
             }
-            
+
 
             $this->do_hard_forks($height, $hash);
         }
@@ -279,7 +289,7 @@ class Block
         if ($height>216000 && $height%43200==0) {
             $res=$this->masternode_votes($public_key, $height, $hash);
         }
-        
+
         // if any fails, rollback
         if ($res == false) {
             _log("Rollback block", 3);
@@ -305,7 +315,7 @@ class Block
             $blacklist=[];
             $total_mns=$db->single("SELECT COUNT(1) FROM masternode");
             $total_mns_with_key=$db->single("SELECT COUNT(1) FROM masternode WHERE vote_key IS NOT NULL");
-            
+
             // only if at least 50% of the masternodes have voting keys
             if ($total_mns_with_key/$total_mns>0.50) {
                 _log("Counting the votes from other masternodes", 3);
@@ -425,7 +435,7 @@ class Block
                         "date"       => $date,
                         "message"    => $use
                     ];
-                    
+
                 $res=$trx->add($hash, $height, $new);
                 if (!$res) {
                     return false;
@@ -449,7 +459,7 @@ class Block
         _log("Starting automated dividend distribution", 3);
         // just the assets with autodividend
         $r=$db->run("SELECT * FROM assets WHERE auto_dividend=1");
-        
+
         if ($r===false) {
             return true;
         }
@@ -578,16 +588,16 @@ class Block
     public function masternode_log($public_key, $height, $hash)
     {
         global $db;
-       
+
         $mn=$db->row("SELECT blacklist,last_won,fails FROM masternode WHERE public_key=:public_key", [":public_key"=>$public_key]);
-        
+
         if (!$mn) {
             return false;
         }
 
         $id = hex2coin(hash("sha512", "resetfails-$hash-$height-$public_key"));
         $msg="$mn[blacklist],$mn[last_won],$mn[fails]";
-        
+
         $res=$db->run(
             "INSERT into transactions SET id=:id, block=:block, height=:height, dst=:dst, val=0, fee=0, signature=:sig, version=111, message=:msg, date=:date, public_key=:public_key",
             [":id"=>$id, ":block"=>$hash, ":height"=>$height, ":dst"=>$hash, ":sig"=>$hash, ":msg"=>$msg, ":date"=>time(), ":public_key"=>$public_key]
@@ -659,7 +669,7 @@ class Block
             $result = ceil($time / $limit);
             _log("Block time: $result", 3);
 
-        
+
             // if larger than 200 sec, increase by 5%
             if ($result > 220) {
                 $dif = bcmul($current['difficulty'], 1.05);
@@ -735,7 +745,7 @@ class Block
             }
             $result=ceil($total_time/$blks);
             _log("Block time: $result", 3);
-           
+
             // if larger than 260 sec, increase by 5%
             if ($result > 260) {
                 $dif = bcmul($current['difficulty'], 1.05);
@@ -907,7 +917,7 @@ class Block
 
         if ($height>=80458) {
             //reward the masternode
-            
+
             $mn_winner=$db->single(
                 "SELECT public_key FROM masternode WHERE status=1 AND blacklist<:current AND height<:start ORDER by last_won ASC, public_key ASC LIMIT 1",
                 [":current"=>$height, ":start"=>$height-360]
@@ -954,7 +964,7 @@ class Block
         }
         return true;
     }
-    
+
     public function blacklist_masternodes()
     {
         global $db;
@@ -1005,7 +1015,7 @@ class Block
     public function mine($public_key, $nonce, $argon, $difficulty = 0, $current_id = 0, $current_height = 0, $time = 0)
     {
         global $_config;
-   
+
         // invalid future blocks
         if ($time>time()+30) {
             return false;
@@ -1026,12 +1036,12 @@ class Block
         if ($difficulty === 0) {
             $difficulty = $this->difficulty();
         }
-        
+
         if (empty($public_key)) {
             _log("Empty public key", 1);
             return false;
         }
-        
+
         if ($current_height<80000) {
             // the argon parameters are hardcoded to avoid any exploits
             if ($current_height > 10800) {
@@ -1065,7 +1075,7 @@ class Block
                 _log("Masternode Mining - $current_height", 2);
                 // masternode
                 global $db;
-                
+
                 // fake time
                 if ($time>time()) {
                     _log("Masternode block in the future - $time", 1);
@@ -1077,7 +1087,7 @@ class Block
                     "SELECT public_key FROM masternode WHERE status=1 AND blacklist<:current AND height<:start ORDER by last_won ASC, public_key ASC LIMIT 1",
                     [":current"=>$current_height, ":start"=>$current_height-360]
                 );
-               
+
                 // if there are no active masternodes, give the block to gpu
                 if ($winner===false) {
                     _log("No active masternodes, reverting to gpu", 1);
@@ -1090,7 +1100,7 @@ class Block
                         _log("4 minutes have not passed since the last block - $time", 1);
                         return false;
                     }
-                    
+
                     if ($public_key==$winner) {
                         return true;
                     }
@@ -1333,7 +1343,7 @@ class Block
             $this->reverse_log($x['id']);
         }
 
-      
+
 
         $db->commit();
         $db->exec("UNLOCK TABLES");
