@@ -1,0 +1,9 @@
+{
+    "require-dev": {
+        "matt-allan/laravel-code-style": "^0.4"
+    },
+    "scripts": {
+        "style:check": "php-cs-fixer fix --dry-run --diff",
+        "style:fix": "php-cs-fixer fix"
+    }
+}
